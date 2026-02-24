@@ -96,4 +96,4 @@ def net_factory(net_type="unet", in_chns=1, class_num=3):
         net = initialize_network(num_classes=class_num).cuda()
     else:
         net = None
-    return net
+    return net.cuda()
