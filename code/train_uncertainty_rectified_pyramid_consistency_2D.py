@@ -307,6 +307,13 @@ def train(args, snapshot_path):
         if iter_num >= max_iterations:
             iterator.close()
             break
+    # ---- FORCE FINAL SAVE ----
+    final_save_path = os.path.join(
+        snapshot_path, "{}_final_model.pth".format(args.model)
+    )
+    torch.save(model.state_dict(), final_save_path)
+    logging.info("Final model saved to {}".format(final_save_path))
+    
     writer.close()
     return "Training Finished!"
 
