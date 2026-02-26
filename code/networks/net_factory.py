@@ -69,13 +69,12 @@ parser.add_argument('--consistency', type=float,
 parser.add_argument('--consistency_rampup', type=float,
                     default=200.0, help='consistency_rampup')
 args = parser.parse_args()
-# config = get_config(args)
+config = get_config(args)
 
 
 def net_factory(net_type="unet", in_chns=1, class_num=3):
     if net_type == "unet":
-        from networks.unet import UNet
-        net = UNet(in_chns=1, class_num=class_num)
+        net = UNet(in_chns=in_chns, class_num=class_num).cuda()
     elif net_type == "enet":
         net = ENet(in_channels=in_chns, num_classes=class_num).cuda()
     elif net_type == "unet_ds":
@@ -96,4 +95,4 @@ def net_factory(net_type="unet", in_chns=1, class_num=3):
         net = initialize_network(num_classes=class_num).cuda()
     else:
         net = None
-    return net.cuda()
+    return net

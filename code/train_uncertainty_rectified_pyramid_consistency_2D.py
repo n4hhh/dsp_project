@@ -57,8 +57,6 @@ parser.add_argument('--consistency', type=float,
                     default=0.1, help='consistency')
 parser.add_argument('--consistency_rampup', type=float,
                     default=200.0, help='consistency_rampup')
-parser.add_argument('--ema_decay', type=float,
-                    default=0.99, help='ema decay for teacher model')
 args = parser.parse_args()
 
 
@@ -80,13 +78,6 @@ def get_current_consistency_weight(epoch):
     return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
 
 
-def update_ema_variables(model, ema_model, alpha, global_step):
-    # Use a smaller decay at the beginning to warm up the teacher.
-    alpha = min(1.0 - 1.0 / (global_step + 1.0), alpha)
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-        ema_param.data.mul_(alpha).add_(param.data, alpha=1.0 - alpha)
-
-
 def train(args, snapshot_path):
     base_lr = args.base_lr
     num_classes = args.num_classes
@@ -95,11 +86,6 @@ def train(args, snapshot_path):
 
     model = net_factory(net_type=args.model, in_chns=1,
                         class_num=num_classes)
-    ema_model = net_factory(net_type=args.model, in_chns=1,
-                            class_num=num_classes)
-    ema_model.load_state_dict(model.state_dict())
-    for param in ema_model.parameters():
-        param.detach_()
 
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
@@ -137,7 +123,6 @@ def train(args, snapshot_path):
     max_epoch = max_iterations // len(trainloader) + 1
     best_performance = 0.0
     kl_distance = nn.KLDivLoss(reduction='none')
-    eps = 1e-6
     iterator = tqdm(range(max_epoch), ncols=70)
     for epoch_num in iterator:
         for i_batch, sampled_batch in enumerate(trainloader):
@@ -151,10 +136,6 @@ def train(args, snapshot_path):
             outputs_aux1_soft = torch.softmax(outputs_aux1, dim=1)
             outputs_aux2_soft = torch.softmax(outputs_aux2, dim=1)
             outputs_aux3_soft = torch.softmax(outputs_aux3, dim=1)
-            outputs_log_soft = F.log_softmax(outputs, dim=1)
-            outputs_aux1_log_soft = F.log_softmax(outputs_aux1, dim=1)
-            outputs_aux2_log_soft = F.log_softmax(outputs_aux2, dim=1)
-            outputs_aux3_log_soft = F.log_softmax(outputs_aux3, dim=1)
 
             loss_ce = ce_loss(outputs[:args.labeled_bs],
                               label_batch[:args.labeled_bs][:].long())
@@ -177,34 +158,26 @@ def train(args, snapshot_path):
             supervised_loss = (loss_ce+loss_ce_aux1+loss_ce_aux2+loss_ce_aux3 +
                                loss_dice+loss_dice_aux1+loss_dice_aux2+loss_dice_aux3)/8
 
-            with torch.no_grad():
-                ema_outputs, ema_outputs_aux1, ema_outputs_aux2, ema_outputs_aux3 = ema_model(
-                    volume_batch)
-                ema_outputs_soft = torch.softmax(ema_outputs, dim=1)
-                ema_outputs_aux1_soft = torch.softmax(ema_outputs_aux1, dim=1)
-                ema_outputs_aux2_soft = torch.softmax(ema_outputs_aux2, dim=1)
-                ema_outputs_aux3_soft = torch.softmax(ema_outputs_aux3, dim=1)
-                preds = (ema_outputs_soft + ema_outputs_aux1_soft +
-                         ema_outputs_aux2_soft + ema_outputs_aux3_soft) / 4
-                preds = torch.clamp(preds, min=eps, max=1.0)
+            preds = (outputs_soft+outputs_aux1_soft +
+                     outputs_aux2_soft+outputs_aux3_soft)/4
 
             variance_main = torch.sum(kl_distance(
-                outputs_log_soft[args.labeled_bs:], preds[args.labeled_bs:]), dim=1, keepdim=True)
+                torch.log(outputs_soft[args.labeled_bs:]), preds[args.labeled_bs:]), dim=1, keepdim=True)
             exp_variance_main = torch.exp(-variance_main)
 
             variance_aux1 = torch.sum(kl_distance(
-                outputs_aux1_log_soft[args.labeled_bs:], preds[args.labeled_bs:]), dim=1, keepdim=True)
+                torch.log(outputs_aux1_soft[args.labeled_bs:]), preds[args.labeled_bs:]), dim=1, keepdim=True)
             exp_variance_aux1 = torch.exp(-variance_aux1)
 
             variance_aux2 = torch.sum(kl_distance(
-                outputs_aux2_log_soft[args.labeled_bs:], preds[args.labeled_bs:]), dim=1, keepdim=True)
+                torch.log(outputs_aux2_soft[args.labeled_bs:]), preds[args.labeled_bs:]), dim=1, keepdim=True)
             exp_variance_aux2 = torch.exp(-variance_aux2)
 
             variance_aux3 = torch.sum(kl_distance(
-                outputs_aux3_log_soft[args.labeled_bs:], preds[args.labeled_bs:]), dim=1, keepdim=True)
+                torch.log(outputs_aux3_soft[args.labeled_bs:]), preds[args.labeled_bs:]), dim=1, keepdim=True)
             exp_variance_aux3 = torch.exp(-variance_aux3)
 
-            consistency_weight = get_current_consistency_weight(iter_num)
+            consistency_weight = get_current_consistency_weight(iter_num//150)
             consistency_dist_main = (
                 preds[args.labeled_bs:] - outputs_soft[args.labeled_bs:]) ** 2
 
@@ -232,7 +205,6 @@ def train(args, snapshot_path):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            update_ema_variables(model, ema_model, args.ema_decay, iter_num)
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
             for param_group in optimizer.param_groups:
@@ -264,11 +236,10 @@ def train(args, snapshot_path):
             if iter_num > 0 and iter_num % 200 == 0:
                 model.eval()
                 metric_list = 0.0
-                with torch.no_grad():
-                    for i_batch, sampled_batch in enumerate(valloader):
-                        metric_i = test_single_volume_ds(
-                            sampled_batch["image"], sampled_batch["label"], model, classes=num_classes)
-                        metric_list += np.array(metric_i)
+                for i_batch, sampled_batch in enumerate(valloader):
+                    metric_i = test_single_volume_ds(
+                        sampled_batch["image"], sampled_batch["label"], model, classes=num_classes)
+                    metric_list += np.array(metric_i)
                 metric_list = metric_list / len(db_val)
                 for class_i in range(num_classes-1):
                     writer.add_scalar('info/val_{}_dice'.format(class_i+1),
@@ -307,13 +278,6 @@ def train(args, snapshot_path):
         if iter_num >= max_iterations:
             iterator.close()
             break
-    # ---- FORCE FINAL SAVE ----
-    final_save_path = os.path.join(
-        snapshot_path, "{}_final_model.pth".format(args.model)
-    )
-    torch.save(model.state_dict(), final_save_path)
-    logging.info("Final model saved to {}".format(final_save_path))
-    
     writer.close()
     return "Training Finished!"
 
