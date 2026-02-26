@@ -29,11 +29,19 @@ parser.add_argument('--labeled_num', type=int, default=3,
 
 
 def calculate_metric_percase(pred, gt):
-    pred[pred > 0] = 1
-    gt[gt > 0] = 1
+    if pred.sum() == 0 and gt.sum() == 0:
+        return 1, 0, 0  # perfect case
+
+    if pred.sum() == 0 and gt.sum() != 0:
+        return 0, 0, 0  # miss detection
+
+    if pred.sum() != 0 and gt.sum() == 0:
+        return 0, 0, 0  # false positive
+
     dice = metric.binary.dc(pred, gt)
-    asd = metric.binary.asd(pred, gt)
     hd95 = metric.binary.hd95(pred, gt)
+    asd = metric.binary.asd(pred, gt)
+
     return dice, hd95, asd
 
 
