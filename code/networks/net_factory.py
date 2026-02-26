@@ -69,7 +69,6 @@ parser.add_argument('--consistency', type=float,
 parser.add_argument('--consistency_rampup', type=float,
                     default=200.0, help='consistency_rampup')
 args = parser.parse_args()
-config = get_config(args)
 
 
 def net_factory(net_type="unet", in_chns=1, class_num=3):
@@ -87,6 +86,7 @@ def net_factory(net_type="unet", in_chns=1, class_num=3):
         net = Effi_UNet('efficientnet-b3', encoder_weights='imagenet',
                         in_channels=in_chns, classes=class_num).cuda()
     elif net_type == "ViT_Seg":
+        config = get_config(args)
         net = ViT_seg(config, img_size=args.patch_size,
                       num_classes=args.num_classes).cuda()
     elif net_type == "pnet":
