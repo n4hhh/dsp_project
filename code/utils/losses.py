@@ -3,6 +3,7 @@ from torch.nn import functional as F
 import numpy as np
 import torch.nn as nn
 from torch.autograd import Variable
+from scipy.ndimage import distance_transform_edt, binary_erosion
 
 
 def dice_loss(score, target):
@@ -217,3 +218,30 @@ def compute_kl_loss(p, q):
 
     loss = (p_loss + q_loss) / 2
     return loss
+
+
+def compute_boundary_loss(pred_probs, target, num_classes, ignore_index=0):
+    """Boundary-aware loss using distance transform of GT boundaries."""
+    if pred_probs.dim() != 4:
+        raise ValueError("pred_probs must be BCHW")
+    target_np = target.detach().cpu().numpy()
+    distance_maps = []
+    for b in range(target_np.shape[0]):
+        class_maps = []
+        for c in range(num_classes):
+            if c == ignore_index:
+                continue
+            gt = (target_np[b] == c).astype(np.uint8)
+            if gt.sum() == 0:
+                class_maps.append(np.zeros_like(gt, dtype=np.float32))
+                continue
+            gt_erode = binary_erosion(gt, iterations=1)
+            gt_boundary = gt ^ gt_erode
+            dist = distance_transform_edt(1 - gt_boundary).astype(np.float32)
+            dist = dist / (dist.max() + 1e-8)
+            class_maps.append(dist)
+        distance_maps.append(np.stack(class_maps, axis=0))
+    distance_maps = np.stack(distance_maps, axis=0)
+    distance_maps = torch.from_numpy(distance_maps).to(pred_probs.device)
+    pred_fg = pred_probs[:, 1:, ...]
+    return torch.mean(pred_fg * distance_maps)

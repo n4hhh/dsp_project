@@ -8,6 +8,7 @@
 
 import numpy as np
 from medpy import metric
+from scipy.ndimage import binary_erosion, distance_transform_edt
 
 
 def cal_dice(prediction, label, num=2):
@@ -45,3 +46,40 @@ def dice(input, target, ignore_index=None):
     intersection = (iflat * tflat).sum()
 
     return (2. * intersection + smooth) / (iflat.sum() + tflat.sum() + smooth)
+
+
+def surface_dice(pred, gt, tolerance=1):
+    pred = pred.astype(bool)
+    gt = gt.astype(bool)
+    pred_surface = pred ^ binary_erosion(pred)
+    gt_surface = gt ^ binary_erosion(gt)
+    pred_surface_sum = pred_surface.sum()
+    gt_surface_sum = gt_surface.sum()
+    if pred_surface_sum == 0 and gt_surface_sum == 0:
+        return 1.0
+    if pred_surface_sum == 0 or gt_surface_sum == 0:
+        return 0.0
+    dt_pred = distance_transform_edt(~pred_surface)
+    dt_gt = distance_transform_edt(~gt_surface)
+    pred_to_gt = (dt_gt[pred_surface] <= tolerance).sum()
+    gt_to_pred = (dt_pred[gt_surface] <= tolerance).sum()
+    return (pred_to_gt + gt_to_pred) / (pred_surface_sum + gt_surface_sum)
+
+
+def expected_calibration_error(probs, labels, n_bins=15):
+    probs = np.asarray(probs)
+    labels = np.asarray(labels)
+    conf = np.max(probs, axis=0)
+    pred = np.argmax(probs, axis=0)
+    correct = (pred == labels).astype(np.float32)
+    conf = conf.flatten()
+    correct = correct.flatten()
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        mask = (conf > bins[i]) & (conf <= bins[i + 1])
+        if mask.any():
+            acc = correct[mask].mean()
+            avg_conf = conf[mask].mean()
+            ece += (mask.mean()) * np.abs(acc - avg_conf)
+    return float(ece)
